@@ -4,6 +4,16 @@
 
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/bytetrack-multi-object-tracking-by-1/multi-object-tracking-on-mot20-1)](https://paperswithcode.com/sota/multi-object-tracking-on-mot20-1?p=bytetrack-multi-object-tracking-by-1)
 
+## Inference YOLOX for MOTRv2
+
+Refer to `tools/inference.sh` for usage.
+
+An example to generate detetion results in MOTRv2 json det_db format is
+```bash
+./tools/inference.sh "/data/Dataset/mot/DanceTrack/*/*/img1/*.jpg"
+```
+The results will be saveed in `det_db_0.json`.
+
 #### ByteTrack is a simple, fast and strong multi-object tracker.
 
 <p align="center"><img src="assets/sota.png" width="500"/></p>

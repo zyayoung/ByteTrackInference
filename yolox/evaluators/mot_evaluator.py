@@ -3,6 +3,7 @@ from loguru import logger
 from tqdm import tqdm
 
 import torch
+from yolox.data import datasets
 
 from yolox.utils import (
     gather,
@@ -341,6 +342,95 @@ class MOTEvaluator:
         eval_results = self.evaluate_prediction(data_list, statistics)
         synchronize()
         return eval_results
+
+    def save_dets(
+        self,
+        model,
+        distributed=False,
+        half=False,
+        trt_file=None,
+        decoder=None,
+        test_size=None,
+        result_folder=None
+    ):
+        """
+        COCO average precision (AP) Evaluation. Iterate inference on the test dataset
+        and the results are evaluated by COCO API.
+
+        NOTE: This function will change training mode to False, please save states if needed.
+
+        Args:
+            model : model to evaluate.
+
+        Returns:
+            ap50_95 (float) : COCO AP of IoU=50:95
+            ap50 (float) : COCO AP of IoU=50
+            summary (sr): summary info of evaluation.
+        """
+        # TODO half to amp_test
+        tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
+        model = model.eval()
+        if half:
+            model = model.half()
+        ids = []
+        progress_bar = tqdm if is_main_process() else iter
+
+        if trt_file is not None:
+            from torch2trt import TRTModule
+
+            model_trt = TRTModule()
+            model_trt.load_state_dict(torch.load(trt_file))
+
+            x = torch.ones(1, 3, test_size[0], test_size[1]).cuda()
+            model(x)
+            model = model_trt
+        det_db = defaultdict(list)
+        for cur_iter, (imgs, _, img_info, ids) in enumerate(
+            progress_bar(self.dataloader)
+        ):
+            with torch.no_grad():
+                imgs = imgs.type(tensor_type)
+
+                outputs = model(imgs)
+                if decoder is not None:
+                    outputs = decoder(outputs, dtype=outputs.type())
+
+                outputs = postprocess(outputs, self.num_classes, self.confthre, self.nmsthre)
+
+            # run tracking
+            for i, output_results in enumerate(outputs):
+                img_path = self.dataloader.dataset.img_list[ids[i].item()]
+                if output_results is None:
+                    with open(img_path[:-4] + '.txt', 'w') as f:
+                        pass
+                    continue
+
+                img_h, img_w = img_info[i].tolist()
+                scores, classes = output_results[:, 5:].max(-1)
+                scores = output_results[:, 4] * scores
+                bboxes = output_results[:, :4]  # x1y1x2y2
+
+                # scale
+                scale = min(self.img_size[0] / float(img_h), self.img_size[1] / float(img_w))
+                bboxes /= scale
+
+                bboxes[:, 2:] -= bboxes[:, :2]
+                tids = torch.argsort(scores, descending=True)
+                scores = scores[tids].tolist()
+                bboxes = bboxes[tids].tolist()
+                classes = classes[tids].tolist()
+
+                # save results
+                save_format = '{x1:.1f},{y1:.1f},{w:.1f},{h:.1f},{s:.2f},{c:d}'
+                for tlwh, s, c in zip(bboxes, scores, classes):
+                    x1, y1, w, h = tlwh
+                    line = save_format.format(x1=x1, y1=y1, w=w, h=h, s=s, c=c)
+                    det_db[img_path[:-4] + '.txt'].append(line)
+        rank = int(os.environ.get('RLAUNCH_REPLICA', '0'))
+        with open(f'det_db_{rank}.json', 'w') as f:
+            json.dump(det_db, f)
+        synchronize()
+        return {}
 
     def evaluate_deepsort(
         self,
